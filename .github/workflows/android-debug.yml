@@ -24,10 +24,50 @@ jobs:
         run: gradle -p android :app:assembleDebug --stacktrace
       - name: Name the APK
         run: cp android/app/build/outputs/apk/debug/app-debug.apk PRIVATE-VPN.apk
+      - name: Inspect APK
+        run: |
+          set +e
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          {
+            echo "APK CHECK REPORT"
+            echo "== signature"
+            "$BT/apksigner" verify --verbose PRIVATE-VPN.apk 2>&1 | head -12
+            echo "== package info"
+            "$BT/aapt2" dump badging PRIVATE-VPN.apk 2>&1 | grep -E "^package|sdkVersion|targetSdkVersion|native-code|debuggable|testOnly" | head -12
+            echo "== native libraries per CPU type"
+            unzip -l PRIVATE-VPN.apk | grep " lib/" | awk '{print $4}' | cut -d/ -f2 | sort | uniq -c
+            echo "== file size"
+            ls -l PRIVATE-VPN.apk | awk '{print $5 " bytes"}'
+          } > apk-report.txt 2>&1
+          cat apk-report.txt
+      - name: Enable KVM for the emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Try installing the APK on an emulator
+        continue-on-error: true
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 33
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          script: |
+            adb install -r PRIVATE-VPN.apk > install-result.txt 2>&1 || true
+            adb logcat -d | grep -E "PackageManager|INSTALL_FAILED|PackageInstaller" | tail -30 >> install-result.txt || true
+      - name: Add the install test to the report
+        if: always()
+        run: |
+          echo "== emulator install test (Android 13)" >> apk-report.txt
+          if [ -f install-result.txt ]; then cat install-result.txt >> apk-report.txt; else echo "emulator test did not run" >> apk-report.txt; fi
+          cat apk-report.txt
       - uses: actions/upload-artifact@v4
         with:
           name: private-vpn-apk
-          path: PRIVATE-VPN.apk
+          path: |
+            PRIVATE-VPN.apk
+            apk-report.txt
       - name: Publish APK on the Releases page
         env:
           GH_TOKEN: ${{ github.token }}
@@ -35,5 +75,5 @@ jobs:
           gh release delete latest --yes --cleanup-tag || true
           gh release create latest PRIVATE-VPN.apk \
             --title "PRIVATE VPN - latest build" \
-            --notes "Download PRIVATE-VPN.apk below and install it on an Android phone." \
+            --notes-file apk-report.txt \
             --target "$GITHUB_SHA"
