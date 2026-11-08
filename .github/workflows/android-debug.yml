@@ -20,24 +20,31 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.9"
-      - name: Build APK
+      - name: Build debug APK
         run: gradle -p android :app:assembleDebug --stacktrace
-      - name: Name the APK
+      - name: Name the debug APK
         run: cp android/app/build/outputs/apk/debug/app-debug.apk PRIVATE-VPN.apk
-      - name: Inspect APK
+      - name: Build signed release APK
+        continue-on-error: true
+        run: |
+          PASS=$(openssl rand -hex 16)
+          keytool -genkeypair -keystore "$RUNNER_TEMP/pv.p12" -storetype PKCS12 -alias privatevpn -keyalg RSA -keysize 2048 -validity 10000 -storepass "$PASS" -keypass "$PASS" -dname "CN=PRIVATE VPN, O=PRIVATE VPN, C=US"
+          PV_KEYSTORE="$RUNNER_TEMP/pv.p12" PV_STORE_PASS="$PASS" gradle -p android :app:assembleRelease --stacktrace
+          cp android/app/build/outputs/apk/release/app-release.apk PRIVATE-VPN-release.apk
+      - name: Inspect APKs
         run: |
           set +e
           BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
           {
             echo "APK CHECK REPORT"
-            echo "== signature"
-            "$BT/apksigner" verify --verbose PRIVATE-VPN.apk 2>&1 | head -12
-            echo "== package info"
-            "$BT/aapt2" dump badging PRIVATE-VPN.apk 2>&1 | grep -E "^package|sdkVersion|targetSdkVersion|native-code|debuggable|testOnly" | head -12
-            echo "== native libraries per CPU type"
-            unzip -l PRIVATE-VPN.apk | grep " lib/" | awk '{print $4}' | cut -d/ -f2 | sort | uniq -c
-            echo "== file size"
-            ls -l PRIVATE-VPN.apk | awk '{print $5 " bytes"}'
+            echo "Install PRIVATE-VPN-release.apk first. PRIVATE-VPN.apk is the debug build."
+            for F in PRIVATE-VPN-release.apk PRIVATE-VPN.apk; do
+              [ -f "$F" ] || { echo "== $F : not built"; continue; }
+              echo "== $F"
+              "$BT/apksigner" verify --verbose "$F" 2>&1 | head -8
+              "$BT/aapt2" dump badging "$F" 2>&1 | grep -E "^package|targetSdkVersion|debuggable|testOnly" | head -6
+              ls -l "$F" | awk '{print $5 " bytes"}'
+            done
           } > apk-report.txt 2>&1
           cat apk-report.txt
       - name: Enable KVM for the emulator
@@ -45,7 +52,7 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-      - name: Try installing the APK on an emulator
+      - name: Try installing the APKs on an emulator
         continue-on-error: true
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -54,8 +61,11 @@ jobs:
           target: google_apis
           disable-animations: true
           script: |
-            adb install -r PRIVATE-VPN.apk > install-result.txt 2>&1 || true
-            adb logcat -d | grep -E "PackageManager|INSTALL_FAILED|PackageInstaller" | tail -30 >> install-result.txt || true
+            echo "release apk:" > install-result.txt
+            adb install -r PRIVATE-VPN-release.apk >> install-result.txt 2>&1 || true
+            adb uninstall com.novavpn.app >> install-result.txt 2>&1 || true
+            echo "debug apk:" >> install-result.txt
+            adb install -r PRIVATE-VPN.apk >> install-result.txt 2>&1 || true
       - name: Add the install test to the report
         if: always()
         run: |
@@ -67,13 +77,16 @@ jobs:
           name: private-vpn-apk
           path: |
             PRIVATE-VPN.apk
+            PRIVATE-VPN-release.apk
             apk-report.txt
-      - name: Publish APK on the Releases page
+      - name: Publish APKs on the Releases page
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          FILES="PRIVATE-VPN.apk"
+          [ -f PRIVATE-VPN-release.apk ] && FILES="PRIVATE-VPN-release.apk $FILES"
           gh release delete latest --yes --cleanup-tag || true
-          gh release create latest PRIVATE-VPN.apk \
+          gh release create latest $FILES \
             --title "PRIVATE VPN - latest build" \
             --notes-file apk-report.txt \
             --target "$GITHUB_SHA"

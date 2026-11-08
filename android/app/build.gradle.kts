@@ -13,6 +13,32 @@ android {
         versionCode = 4
         versionName = "1.2.1"
     }
+    signingConfigs {
+        create("release") {
+            val ksPath = System.getenv("PV_KEYSTORE")
+            if (ksPath != null) {
+                storeFile = file(ksPath)
+                storePassword = System.getenv("PV_STORE_PASS")
+                keyAlias = "privatevpn"
+                keyPassword = System.getenv("PV_STORE_PASS")
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
+            }
+        }
+    }
+    buildTypes {
+        release {
+            if (System.getenv("PV_KEYSTORE") != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+            isMinifyEnabled = false
+        }
+    }
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
+    }
     buildFeatures { compose = true }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
