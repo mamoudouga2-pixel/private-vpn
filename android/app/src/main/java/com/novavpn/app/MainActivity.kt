@@ -337,7 +337,7 @@ class MainActivity : ComponentActivity() {
                 }
                 val configText = result.getString("config")
                 withContext(Dispatchers.IO) {
-                    Config.parse(configText.reader())
+                    Config.parse(configText.reader().buffered())
                     vault.writeSecureFile(file, configText)
                 }
                 busy = false; statusText = "${selected.name} profile secured on this device. Connecting…"
@@ -362,7 +362,7 @@ class MainActivity : ComponentActivity() {
             try {
                 withContext(Dispatchers.IO) {
                     val configText = vault.readSecureFile(file)
-                    val config = Config.parse(configText.reader())
+                    val config = Config.parse(configText.reader().buffered())
                     backend.setState(tunnel, Tunnel.State.UP, config)
                 }
                 connected = true; busy = false; statusText = "Protected connection is active · ${selected.name}."
